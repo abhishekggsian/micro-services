@@ -1,4 +1,4 @@
-name: Build and Deploy to Azure Container Apps
+name: Build and Deploy to Azure
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - develop
     paths:
       - 'elearn-frontend/**'
+      - 'infra/terraform/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -13,15 +14,17 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  AZURE_CONTAINER_REGISTRY: elearnacrdev
+  CONTAINER_APP_NAME: elearn-frontend-dev
+  RESOURCE_GROUP: github-deployments
+  TF_WORKING_DIR: ./infra/terraform
+
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-
-    env:
-      AZURE_CONTAINER_REGISTRY: elearnacrdev
-      CONTAINER_APP_NAME: elearn-frontend-dev
-      RESOURCE_GROUP: github-deployments
-
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,24 +36,61 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Set Image Tag
+        id: set-tag
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
       - name: Log in to ACR
         run: |
           az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
 
       - name: Build and push container image
         run: |
-          IMAGE_TAG=${{ github.sha }}
+          IMAGE_TAG=${{ steps.set-tag.outputs.tag }}
           ACR_LOGIN_SERVER=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io
           IMAGE_NAME=$ACR_LOGIN_SERVER/${{ env.CONTAINER_APP_NAME }}:$IMAGE_TAG
           
           docker build -t $IMAGE_NAME ./elearn-frontend
           docker push $IMAGE_NAME
-          
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_USE_OIDC: true
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_USE_OIDC: true
 
       - name: Deploy to Azure Container App
         uses: azure/container-apps-deploy-action@v1
         with:
-          imageToDeploy: ${{ env.IMAGE_NAME }}
+          imageToDeploy: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ needs.build.outputs.image_tag }}
           resourceGroup: ${{ env.RESOURCE_GROUP }}
           containerAppName: ${{ env.CONTAINER_APP_NAME }}
