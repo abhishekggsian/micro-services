@@ -1,0 +1,56 @@
+name: Build and Deploy to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'elearn-frontend/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AZURE_CONTAINER_REGISTRY: elearnacrdev
+      CONTAINER_APP_NAME: elearn-frontend-dev
+      RESOURCE_GROUP: github-deployments
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        run: |
+          az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
+
+      - name: Build and push container image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          ACR_LOGIN_SERVER=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          IMAGE_NAME=$ACR_LOGIN_SERVER/${{ env.CONTAINER_APP_NAME }}:$IMAGE_TAG
+          
+          docker build -t $IMAGE_NAME ./elearn-frontend
+          docker push $IMAGE_NAME
+          
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+      - name: Deploy to Azure Container App
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          imageToDeploy: ${{ env.IMAGE_NAME }}
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+          containerAppName: ${{ env.CONTAINER_APP_NAME }}
