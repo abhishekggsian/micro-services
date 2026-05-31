@@ -1,5 +1,5 @@
 name: Destroy Azure Resources
-
+#
 on:
   workflow_dispatch:
 
